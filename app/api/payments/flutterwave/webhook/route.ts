@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
 
   } catch (error) {
     console.error('Webhook error:', error);
-    // Always return 200 to prevent Flutterwave retries
+    // Always return 200 to prevent Flutterwave retries always
     return NextResponse.json({ received: true });
   }
 }
