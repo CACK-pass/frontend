@@ -144,7 +144,7 @@ Body: {
 }
 ```
 
-## 🧪 Development
+## 🧪 Development Details
 
 ### Database Models
 - **User** - Auth data (Privy ID, wallet, login method)
