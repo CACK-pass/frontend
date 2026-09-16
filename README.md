@@ -153,6 +153,7 @@ Body: {
 - **TicketType** - Ticket categories + pricing
 - **Order** - Purchase records
 - **CheckIn** - Ticket verification logs
+- **Payment** - Payment type logs
 
 ### Adding a Feature
 1. Create component in `/components/[category]/`
