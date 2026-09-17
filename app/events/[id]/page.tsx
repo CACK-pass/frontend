@@ -120,6 +120,14 @@ const getSafeAvatarUrl = (avatar?: string) => {
   return `/${avatar}`
 }
 
+// ✅ Availability label for non-organizer viewers
+// Shows "Available" when stock > 0, "Sold Out" when stock = 0
+// Organizers see the exact numeric breakdown separately.
+const getPublicAvailabilityLabel = (available: number | 'Unlimited'): string => {
+  if (available === 'Unlimited') return 'Available'
+  return available > 0 ? 'Available' : 'Sold Out'
+}
+
 // Helper functions
 const getWalletAddress = (user: any): string | null => {
   if (!user) return null
@@ -290,6 +298,7 @@ function EventPageContent() {
   
   // Guest checkout state
   const [guestEmail, setGuestEmail] = useState('')
+  const [guestEmailError, setGuestEmailError] = useState<string>('')
   const [showGuestEmailModal, setShowGuestEmailModal] = useState(false)
   const [isSubmittingGuestEmail, setIsSubmittingGuestEmail] = useState(false)
   
@@ -419,6 +428,18 @@ function EventPageContent() {
     }
     checkOrganizer()
   }, [event, userEmail])
+
+    // ✅ Reset guest email error when the modal opens/closes
+  useEffect(() => {
+    if (showGuestEmailModal) {
+      // Fresh open — clear error, keep typed email if re-opened
+      setGuestEmailError('')
+    } else {
+      // Modal closed — fully reset
+      setGuestEmail('')
+      setGuestEmailError('')
+    }
+  }, [showGuestEmailModal])
 
   // Fetch discounts with validation
   const fetchDiscounts = useCallback(async () => {
@@ -830,63 +851,155 @@ const handlePayWithCard = useCallback(async (overrideEmail?: string) => {
   const isPastEvent = event?.endDate ? new Date(event.endDate) < new Date() : false
 
   // Guest Email Modal
-  const GuestEmailModal = () => (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80" onClick={() => !isSubmittingGuestEmail && setShowGuestEmailModal(false)}>
-      <div className="max-w-md w-full bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6" onClick={(e) => e.stopPropagation()}>
-        <div className="text-center mb-6">
-          <div className="w-16 h-16 mx-auto mb-4 bg-primary/10 rounded-full flex items-center justify-center">
-            <AtSign className="h-8 w-8 text-primary" />
-          </div>
-          <h2 className="text-2xl font-bold mb-2">Enter Your Email</h2>
-          <p className="text-gray-600 dark:text-gray-400">
-            We'll send your ticket confirmation to this email address
-          </p>
-        </div>
-        
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">Email Address</label>
-            <div className="relative">
-              <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
-              <input
-                type="email"
-                value={guestEmail}
-                onChange={(e) => setGuestEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full pl-12 pr-4 py-3 border rounded-xl dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-primary"
-                disabled={isSubmittingGuestEmail}
-                autoFocus
-              />
+  // Guest Email Modal
+  const GuestEmailModal = () => {
+    // ✅ Live validation helper
+    const validateEmail = (value: string): string => {
+      if (!value.trim()) return 'Email is required'
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+      if (!emailRegex.test(value.trim())) return 'Please enter a valid email address'
+      return ''
+    }
+
+    const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value
+      setGuestEmail(value)
+      // Only show error after the user starts typing
+      if (value.length > 0) {
+        setGuestEmailError(validateEmail(value))
+      } else {
+        setGuestEmailError('')
+      }
+    }
+
+    const handleBlur = () => {
+      setGuestEmailError(validateEmail(guestEmail))
+    }
+
+    const handleSubmit = () => {
+      const error = validateEmail(guestEmail)
+      if (error) {
+        setGuestEmailError(error)
+        toast.error(error)
+        return
+      }
+      handleGuestEmailSubmit()
+    }
+
+    const isEmailValid = validateEmail(guestEmail) === ''
+
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80"
+        onClick={() => !isSubmittingGuestEmail && setShowGuestEmailModal(false)}
+      >
+        <div
+          className="max-w-md w-full bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 mx-auto mb-4 bg-primary/10 rounded-full flex items-center justify-center">
+              <AtSign className="h-8 w-8 text-primary" />
             </div>
+            <h2 className="text-2xl font-bold mb-2">Enter Your Email</h2>
+            <p className="text-gray-600 dark:text-gray-400">
+              We'll send your ticket confirmation to this email address
+            </p>
           </div>
-          
-          <div className="flex gap-3">
-            <button
-              onClick={() => setShowGuestEmailModal(false)}
-              className="flex-1 py-3 border border-gray-300 dark:border-gray-600 rounded-xl font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-              disabled={isSubmittingGuestEmail}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleGuestEmailSubmit}
-              disabled={isSubmittingGuestEmail || !guestEmail.trim()}
-              className="flex-1 py-3 bg-primary text-white rounded-xl font-medium hover:bg-primary-dark disabled:opacity-50 flex items-center justify-center gap-2"
-            >
-              {isSubmittingGuestEmail ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Processing...
-                </>
-              ) : (
-                'Continue'
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">
+                Email Address <span className="text-red-500">*</span>
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+                <input
+                  type="email"
+                  value={guestEmail}
+                  onChange={handleEmailChange}
+                  onBlur={handleBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && isEmailValid && !isSubmittingGuestEmail) {
+                      handleSubmit()
+                    }
+                  }}
+                  placeholder="you@example.com"
+                  className={`w-full pl-12 pr-10 py-3 border rounded-xl dark:bg-gray-700 dark:border-gray-600 focus:outline-none focus:ring-2 transition-colors ${
+                    guestEmailError
+                      ? 'border-red-500 focus:ring-red-500'
+                      : isEmailValid && guestEmail.length > 0
+                        ? 'border-green-500 focus:ring-green-500'
+                        : 'focus:ring-primary'
+                  }`}
+                  disabled={isSubmittingGuestEmail}
+                  autoFocus
+                  autoComplete="email"
+                  inputMode="email"
+                  aria-invalid={!!guestEmailError}
+                  aria-describedby="guest-email-error"
+                />
+
+                {/* ✅ Inline status icon */}
+                {guestEmail.length > 0 && (
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    {guestEmailError ? (
+                      <AlertCircle className="h-5 w-5 text-red-500" />
+                    ) : (
+                      <CheckCircle className="h-5 w-5 text-green-500" />
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* ✅ Inline error message */}
+              {guestEmailError && (
+                <p
+                  id="guest-email-error"
+                  className="mt-2 text-sm text-red-600 dark:text-red-400 flex items-center gap-1"
+                >
+                  <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
+                  {guestEmailError}
+                </p>
               )}
-            </button>
+
+              {/* ✅ Success hint */}
+              {!guestEmailError && guestEmail.length > 0 && (
+                <p className="mt-2 text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                  <CheckCircle className="h-3.5 w-3.5 flex-shrink-0" />
+                  Email looks good
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowGuestEmailModal(false)}
+                className="flex-1 py-3 border border-gray-300 dark:border-gray-600 rounded-xl font-medium hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                disabled={isSubmittingGuestEmail}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={isSubmittingGuestEmail || !isEmailValid}
+                className="flex-1 py-3 bg-primary text-white rounded-xl font-medium hover:bg-primary-dark disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 transition-colors"
+              >
+                {isSubmittingGuestEmail ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  'Continue'
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  )
+    )
+  }
 
   // Show skeleton while loading
   if (isLoading) {
@@ -934,6 +1047,7 @@ const handlePayWithCard = useCallback(async (overrideEmail?: string) => {
 
   const organizer = getSafeOrganizer(event.organizer)
   const organizerAvatar = getSafeAvatarUrl(organizer.avatar)
+
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
@@ -1103,7 +1217,24 @@ const handlePayWithCard = useCallback(async (overrideEmail?: string) => {
                                 <h3 className="font-semibold text-lg mb-1">{ticketType.name}</h3>
                                 <div className="flex items-center gap-2">
                                   <span className="text-sm text-gray-600">{ticketType.category}</span>
-                                  <span className="text-sm">• {available} of {ticketType.maxSupply > 0 ? ticketType.maxSupply : (event.capacity || 'Unlimited')} left</span>
+                                  <span className="text-sm">•</span>
+                                  {isOrganizer ? (
+                                    // ✅ Organizer: exact numeric count
+                                    <span className="text-sm">
+                                      {available} of {ticketType.maxSupply > 0 ? ticketType.maxSupply : (event.capacity || 'Unlimited')} left
+                                    </span>
+                                  ) : (
+                                    // ✅ Public: only "Available" or "Sold Out"
+                                    <span
+                                      className={`text-sm font-medium ${
+                                        getPublicAvailabilityLabel(available) === 'Sold Out'
+                                          ? 'text-red-600 dark:text-red-400'
+                                          : 'text-green-600 dark:text-green-400'
+                                      }`}
+                                    >
+                                      {getPublicAvailabilityLabel(available)}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                               <div className="text-right">

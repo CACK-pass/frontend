@@ -5,6 +5,7 @@ import { Search, Filter, Calendar, MapPin, Ticket, Globe, Users, Clock, ChevronR
 import Link from 'next/link'
 import { toast } from 'sonner'
 import { useSearchParams, useRouter } from 'next/navigation'
+import { usePrivy } from '@privy-io/react-auth'
 
 // ==================== TYPE DEFINITIONS ====================
 interface Event {
@@ -115,8 +116,37 @@ function getSoldPercentage(event: Event): number {
   return (sold / total) * 100
 }
 
+// ✅ Copied verbatim from app/events/[id]/page.tsx
+const getWalletAddress = (user: any): string | null => {
+  if (!user) return null
+  if (user.wallet?.address) return user.wallet.address
+  const linkedAccounts = user.linkedAccounts || []
+  for (const account of linkedAccounts) {
+    if (account.type === 'wallet' && account.address) return account.address
+  }
+  return null
+}
+
+// ✅ Copied verbatim from app/events/[id]/page.tsx
+let emailCache: { [key: string]: string } = {}
+const fetchUserEmailByWallet = async (wallet: string): Promise<string | null> => {
+  if (emailCache[wallet]) return emailCache[wallet]
+  
+  try {
+    const res = await fetch(`/api/auth/user?walletAddress=${wallet}`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const email = data.user?.email || null
+    if (email) emailCache[wallet] = email
+    return email
+  } catch (error) {
+    console.error('Failed to fetch user email:', error)
+    return null
+  }
+}
+
 // ==================== EVENT CARD COMPONENT ====================
-function EventCard({ event }: { event: Event }) {
+function EventCard({ event, isOrganizer = false }: { event: Event; isOrganizer?: boolean }) {
   const categoryInfo = getCategoryInfo(event.category)
   const ticketsAvailable = areTicketsAvailable(event)
   const eventStatus = getEventStatus(event)
@@ -239,14 +269,22 @@ function EventCard({ event }: { event: Event }) {
               <div className="flex items-center justify-between text-sm">
                 <div className="flex items-center text-text">
                   <Users className="h-4 w-4 text-text-light mr-2 flex-shrink-0" />
-                  <span className="font-medium">
-                    {remainingTickets === 'Unlimited' 
-                      ? 'Unlimited tickets' 
-                      : `${remainingTickets} of ${event.capacity} left`
-                    }
-                  </span>
+                  {isOrganizer ? (
+                    // ✅ Organizer: exact numbers
+                    <span className="font-medium">
+                      {remainingTickets === 'Unlimited' 
+                        ? 'Unlimited tickets' 
+                        : `${remainingTickets} of ${event.capacity} left`
+                      }
+                    </span>
+                  ) : (
+                    // ✅ Public: only "Available" — no numbers
+                    <span className="font-medium text-green-600 dark:text-green-400">
+                      Available
+                    </span>
+                  )}
                 </div>
-                {isAlmostSoldOut && !event.unlimitedCapacity && (
+                {isOrganizer && isAlmostSoldOut && !event.unlimitedCapacity && (
                   <div className="flex items-center gap-1 text-orange-500 text-xs font-semibold">
                     <TrendingDown className="h-3 w-3" />
                     Almost sold out!
@@ -254,7 +292,8 @@ function EventCard({ event }: { event: Event }) {
                 )}
               </div>
               
-              {!event.unlimitedCapacity && event.capacity && (
+              {/* ✅ Progress bar visible only to organizer */}
+              {isOrganizer && !event.unlimitedCapacity && event.capacity && (
                 <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
                   <div 
                     className={`h-full rounded-full transition-all duration-500 ${
@@ -301,12 +340,13 @@ function EventCard({ event }: { event: Event }) {
                   On-chain
                 </span>
               )}
-              {!event.unlimitedCapacity && event.ticketsSold !== undefined && event.ticketsSold > 0 && (
-                <span className="flex items-center gap-1">
-                  <TrendingUp className="h-3 w-3" />
-                  {event.ticketsSold} sold
-                </span>
-              )}
+                {isOrganizer && !event.unlimitedCapacity && event.ticketsSold !== undefined && event.ticketsSold > 0 && (
+                  <span className="flex items-center gap-1">
+                    <TrendingUp className="h-3 w-3" />
+                    {event.ticketsSold} sold
+                  </span>
+                )}
+              
             </div>
           </div>
         </div>
@@ -319,7 +359,14 @@ function EventCard({ event }: { event: Event }) {
 export default function EventsPage() {
   const router = useRouter()
   const searchParams = useSearchParams()
+  const { user, authenticated, ready } = usePrivy()
   const isInitialMount = useRef(true)
+
+  // ✅ Same derivation as app/events/[id]/page.tsx
+  const walletAddress = getWalletAddress(user)
+  const isLoggedIn = authenticated && ready
+
+  const [userEmail, setUserEmail] = useState<string | null>(null)
   
   const [events, setEvents] = useState<Event[]>([])
   const [search, setSearch] = useState(searchParams.get('search') || '')
@@ -396,6 +443,61 @@ export default function EventsPage() {
       setIsLoadingMore(false)
     }
   }, [selectedCategory, priceFilter, dateFilter, search])
+
+  // ✅ Copied verbatim from app/events/[id]/page.tsx
+  // Fetch logged-in user's email - delayed to not block render
+  useEffect(() => {
+    const fetchUserEmail = async () => {
+      if (!isLoggedIn || !walletAddress) return
+
+      setTimeout(async () => {
+        try {
+          const email = await fetchUserEmailByWallet(walletAddress)
+          if (email) setUserEmail(email)
+        } catch (error) {
+          console.error('Error fetching user email:', error)
+        }
+      }, 200)
+    }
+    fetchUserEmail()
+  }, [isLoggedIn, walletAddress])
+
+    // ✅ Same pattern as [id]/page.tsx: fetch organizer email by wallet,
+  // then compare against the current user's email.
+  // Runs when events load or when the user's email becomes available.
+  const [organizerEmails, setOrganizerEmails] = useState<Record<string, string | null>>({})
+
+  useEffect(() => {
+    if (!userEmail || events.length === 0) return
+
+    let cancelled = false
+
+    const resolveOrganizers = async () => {
+      const result = { ...organizerEmails }
+      const wallets = Array.from(
+        new Set(
+          events
+            .map((e) => e.organizerWallet)
+            .filter((w): w is string => !!w)
+        )
+      )
+
+      for (const wallet of wallets) {
+        if (result[wallet] !== undefined) continue
+        // ✅ Uses the exact same helper as [id]/page.tsx
+        result[wallet] = await fetchUserEmailByWallet(wallet)
+      }
+
+      if (!cancelled) setOrganizerEmails(result)
+    }
+
+    resolveOrganizers()
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, userEmail])
 
   // Update URL when filters change (but don't trigger fetch on initial mount)
   useEffect(() => {
@@ -611,9 +713,22 @@ export default function EventsPage() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 mb-12">
-              {events.map((event) => (
-                <EventCard key={event._id} event={event} />
-              ))}
+              {events.map((event) => {
+                // ✅ Identical comparison to app/events/[id]/page.tsx
+                const organizerEmail = event.organizerWallet
+                  ? organizerEmails[event.organizerWallet]
+                  : null
+                const isOrganizer =
+                  !!userEmail && !!organizerEmail && organizerEmail === userEmail
+
+                return (
+                  <EventCard
+                    key={event._id}
+                    event={event}
+                    isOrganizer={isOrganizer}
+                  />
+                )
+              })}
             </div>
 
             {currentPage < totalPages && (
