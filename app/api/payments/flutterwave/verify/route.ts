@@ -59,9 +59,17 @@ async function sendTicketConfirmationEmail(params: {
     minute: '2-digit'
   }) : 'Time to be announced';
 
-  // Generate QR codes for tickets
-  const qrCodes: string[] = [];
-  
+  // ✅ Generate QR codes as buffers for inline attachments
+  type QrAttachment = {
+    filename: string;
+    content: Buffer;
+    cid: string;
+    contentType: string;
+  };
+
+  const qrAttachments: QrAttachment[] = [];
+  const qrCids: string[] = [];
+
   for (const ticket of params.tickets) {
     try {
       const qrData = JSON.stringify({
@@ -73,19 +81,30 @@ async function sendTicketConfirmationEmail(params: {
         venue: params.venue,
         reference: params.reference
       });
-      
-      const qrCodeDataUrl = await QRCode.toDataURL(qrData, {
+
+      // ✅ Generate as buffer with orange color for inline attachment
+      const qrBuffer = await QRCode.toBuffer(qrData, {
         width: 200,
         margin: 2,
         color: {
-          dark: '#D95427',
+          dark: '#D95427', // ✅ CACK-pass orange
           light: '#ffffff'
         }
       });
-      qrCodes.push(qrCodeDataUrl);
+
+      const cid = `qr-${ticket.ticketNumber}`;
+
+      qrAttachments.push({
+        filename: `${ticket.ticketNumber}.png`,
+        content: qrBuffer,
+        cid,
+        contentType: 'image/png',
+      });
+
+      qrCids.push(cid);
     } catch (qrError) {
       console.error('QR code generation failed:', qrError);
-      qrCodes.push('');
+      qrCids.push('');
     }
   }
 
@@ -97,7 +116,7 @@ async function sendTicketConfirmationEmail(params: {
         <span class="value">${ticket.ticketNumber}</span>
       </div>
       <div class="qr-code" style="text-align: center; margin: 15px 0;">
-        ${qrCodes[index] ? `<img src="${qrCodes[index]}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />` : ''}
+        ${qrCids[index] ? `<img src="cid:${qrCids[index]}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />` : ''}
         <p style="margin-top: 10px; font-size: 12px; color: #6c757d;">
           Scan this QR code at the event entrance
         </p>
@@ -180,6 +199,8 @@ async function sendTicketConfirmationEmail(params: {
     to: params.email,
     subject: `🎫 Your Tickets for ${params.eventTitle} - CACK-pass`,
     html: emailHtml,
+    // ✅ Attach QR buffers so Gmail renders them inline via cid
+    attachments: qrAttachments,
   };
 
   const info = await transporter.sendMail(mailOptions);

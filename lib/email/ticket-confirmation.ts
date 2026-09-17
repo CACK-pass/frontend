@@ -37,12 +37,15 @@ export async function sendTicketConfirmationEmail(params: TicketConfirmationPara
     minute: '2-digit'
   }) : 'Time to be announced';
 
-  // Generate QR codes for tickets
+  // ✅ Generate QR codes as buffers for inline attachments
+  type QrAttachment = {
+    filename: string;
+    content: Buffer;
+    cid: string;
+    contentType: string;
+  };
+
   const qrPromises = params.tickets.map(async (ticket) => {
-    if (ticket.qrCode) {
-      return ticket.qrCode;
-    }
-    
     try {
       const qrData = JSON.stringify({
         ticketNumber: ticket.ticketNumber,
@@ -52,38 +55,52 @@ export async function sendTicketConfirmationEmail(params: TicketConfirmationPara
         date: formattedDate,
         venue: params.venue
       });
-      
-      return await QRCode.toDataURL(qrData, {
+
+      const qrBuffer = await QRCode.toBuffer(qrData, {
         width: 200,
         margin: 2,
         color: {
-          dark: '#D95427',
+          dark: '#D95427', // ✅ CACK-pass orange
           light: '#ffffff'
         }
       });
+
+      const cid = `qr-${ticket.ticketNumber}`;
+
+      const attachment: QrAttachment = {
+        filename: `${ticket.ticketNumber}.png`,
+        content: qrBuffer,
+        cid,
+        contentType: 'image/png',
+      };
+
+      return { cid, attachment };
     } catch (qrError) {
       console.error('QR code generation failed:', qrError);
-      return '';
+      return { cid: '', attachment: null };
     }
   });
 
-  const qrCodes = await Promise.all(qrPromises);
+  const qrResults = await Promise.all(qrPromises);
 
-  const ticketsHtml = params.tickets.map((ticket, index) => `
-    <div class="ticket-item" style="margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px;">
-      <h3 style="color: #D95427; margin-bottom: 10px;">Ticket #${index + 1}</h3>
-      <div class="ticket-detail" style="margin-bottom: 10px;">
-        <span class="label" style="font-weight: 600;">Ticket ID:</span>
-        <span class="value">${ticket.ticketNumber}</span>
+  const ticketsHtml = params.tickets.map((ticket, index) => {
+    const cid = qrResults[index]?.cid || '';
+    return `
+      <div class="ticket-item" style="margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px;">
+        <h3 style="color: #D95427; margin-bottom: 10px;">Ticket #${index + 1}</h3>
+        <div class="ticket-detail" style="margin-bottom: 10px;">
+          <span class="label" style="font-weight: 600;">Ticket ID:</span>
+          <span class="value">${ticket.ticketNumber}</span>
+        </div>
+        <div class="qr-code" style="text-align: center; margin: 15px 0;">
+          ${cid ? `<img src="cid:${cid}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />` : ''}
+          <p style="margin-top: 10px; font-size: 12px; color: #6c757d;">
+            Scan this QR code at the event entrance
+          </p>
+        </div>
       </div>
-      <div class="qr-code" style="text-align: center; margin: 15px 0;">
-        ${qrCodes[index] ? `<img src="${qrCodes[index]}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />` : ''}
-        <p style="margin-top: 10px; font-size: 12px; color: #6c757d;">
-          Scan this QR code at the event entrance
-        </p>
-      </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 
   const emailHtml = `
     <!DOCTYPE html>
@@ -154,9 +171,14 @@ export async function sendTicketConfirmationEmail(params: TicketConfirmationPara
     </html>
   `;
 
+  const qrAttachments = qrResults
+    .map((r) => r.attachment)
+    .filter((a): a is QrAttachment => a !== null);
+
   return sendEmail({
     to: params.email,
     subject: `🎫 Your Tickets for ${params.eventTitle} - CACK-pass`,
     html: emailHtml,
+    attachments: qrAttachments, // ✅ pass through to Nodemailer
   });
 }

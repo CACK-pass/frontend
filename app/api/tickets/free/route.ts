@@ -50,7 +50,7 @@ async function sendFreeTicketEmail(params: {
   ticketCount: number
   ticketType: string
   ticketId: string
-  qrCodeDataUrl: string
+  qrCodeDataUrl?: string  // optional now — we regenerate as buffer
 }) {
   const gmailUser = process.env.GMAIL_USER
 
@@ -69,6 +69,34 @@ async function sendFreeTicketEmail(params: {
     hour: '2-digit',
     minute: '2-digit'
   }) : 'Time to be announced'
+
+  // ✅ Generate QR as buffer for inline attachment (orange)
+  const qrData = JSON.stringify({
+    ticketId: params.ticketId,
+    eventTitle: params.eventTitle,
+    quantity: params.ticketCount,
+    email: params.email,
+    date: formattedDate,
+    venue: params.venue
+  })
+
+  const qrBuffer = await QRCode.toBuffer(qrData, {
+    width: 200,
+    margin: 2,
+    color: {
+      dark: '#D95427', // ✅ CACK-pass orange
+      light: '#ffffff'
+    }
+  })
+
+  const cid = `qr-${params.ticketId}`
+
+  const qrAttachment = {
+    filename: `${params.ticketId}.png`,
+    content: qrBuffer,
+    cid,
+    contentType: 'image/png',
+  }
 
   const emailHtml = `
     <!DOCTYPE html>
@@ -117,7 +145,11 @@ async function sendFreeTicketEmail(params: {
             <div class="ticket-detail"><span class="label">💰 Amount:</span><span class="value"><strong style="color: #10b981;">FREE</strong></span></div>
             <div class="ticket-detail"><span class="label">🆔 Ticket ID:</span><span class="value">${params.ticketId}</span></div>
           </div>
-          ${params.qrCodeDataUrl ? `<div class="qr-code"><h3>Your Digital Ticket</h3><img src="${params.qrCodeDataUrl}" alt="Ticket QR Code" /><p>Scan this QR code at the event entrance</p></div>` : ''}
+          <div class="qr-code">
+            <h3>Your Digital Ticket</h3>
+            <img src="cid:${cid}" alt="Ticket QR Code" />
+            <p>Scan this QR code at the event entrance</p>
+          </div>
           <div style="text-align: center;"><a href="${process.env.NEXT_PUBLIC_APP_URL}/dashboard/tickets" class="button">View My Tickets</a></div>
           <div class="info-box">
             <h4>⚠️ Important Information</h4>
@@ -144,6 +176,7 @@ async function sendFreeTicketEmail(params: {
     to: params.email,
     subject: `🎫 Your FREE Ticket for ${params.eventTitle} - CACK-pass`,
     html: emailHtml,
+    attachments: [qrAttachment], // ✅ inline attachment
   }
 
   const info = await transporter.sendMail(mailOptions)

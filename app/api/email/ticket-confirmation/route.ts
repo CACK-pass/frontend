@@ -1,8 +1,5 @@
 // app/api/email/ticket-confirmation/route.ts 
 
-// ✅ REMOVED: export const runtime = 'edge';
-// ✅ REMOVED: export const preferredRegion = 'auto';
-
 import { NextRequest, NextResponse } from 'next/server';
 
 // Lazy load heavy dependencies (only load when API is called)
@@ -119,9 +116,16 @@ export async function POST(request: NextRequest) {
       console.error(`No tickets found for reference: ${reference}`);
     }
 
-    // Generate QR codes in parallel (faster than sequential for loop)
+    // Generate QR codes in parallel as buffers for inline attachments
     const QRCodeLib = await getQRCode();
-    
+
+    type QrAttachment = {
+      filename: string;
+      content: Buffer;
+      cid: string;
+      contentType: string;
+    };
+
     const qrResults = await Promise.all(
       tickets.map(async (ticket: any) => {
         try {
@@ -131,23 +135,48 @@ export async function POST(request: NextRequest) {
             eventId: event ? event._id.toString() : '',
             sig: hmac,
           });
-          
+
+          // ✅ Generate as buffer for inline attachment (not data URL)
+          const qrBuffer = await QRCodeLib.toBuffer(qrPayload, {
+            width: 300,
+            margin: 4,
+            errorCorrectionLevel: 'H',
+            color: {
+              dark: '#D95427', // ✅ CACK-pass orange
+              light: '#ffffff'
+            }
+          });
+
+          // Store as data URL in DB for other uses (unchanged behavior)
           const qrDataUrl = await QRCodeLib.toDataURL(qrPayload, {
             width: 300,
             margin: 4,
             errorCorrectionLevel: 'H',
             color: {
-              dark: '#000000',
+              dark: '#D95427',
               light: '#ffffff'
             }
           });
-          
+
           await MyTicket.updateOne(
             { _id: ticket._id },
             { $set: { qrCode: qrDataUrl } }
           );
-          
-          return { ticketNumber: ticket.ticketNumber, qrDataUrl };
+
+          const cid = `qr-${ticket.ticketNumber}`;
+
+          const attachment: QrAttachment = {
+            filename: `${ticket.ticketNumber}.png`,
+            content: qrBuffer,
+            cid,
+            contentType: 'image/png',
+          };
+
+          return {
+            ticketNumber: ticket.ticketNumber,
+            cid,
+            attachment,
+          };
         } catch (qrError) {
           console.error(`❌ QR code generation failed for ticket ${ticket.ticketNumber}:`, qrError);
           return null;
@@ -155,11 +184,18 @@ export async function POST(request: NextRequest) {
       })
     );
 
-    const qrCodes = qrResults.filter((result): result is { ticketNumber: string; qrDataUrl: string } => result !== null);
+    const qrCodes = qrResults.filter(
+      (result): result is {
+        ticketNumber: string;
+        cid: string;
+        attachment: QrAttachment;
+      } => result !== null
+    );
 
     console.log(`✅ Generated and saved ${qrCodes.length} QR codes for ${tickets.length} tickets`);
+    console.log(`📎 Preparing ${qrCodes.length} inline QR attachment(s)`);
 
-    // Build email HTML with multiple QR codes
+    // Build email HTML with CID references instead of data URLs
     const ticketsHtml = qrCodes.map((qr, index) => `
       <div class="ticket-item" style="margin-bottom: 30px; border-bottom: 1px solid #eee; padding-bottom: 20px;">
         <h3 style="color: #D95427; margin-bottom: 10px;">Ticket #${index + 1}</h3>
@@ -168,7 +204,7 @@ export async function POST(request: NextRequest) {
           <span class="value">${qr.ticketNumber}</span>
         </div>
         <div class="qr-code" style="text-align: center; margin: 15px 0;">
-          <img src="${qr.qrDataUrl}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />
+          <img src="cid:${qr.cid}" alt="Ticket QR Code" style="max-width: 180px; height: auto;" />
           <p style="margin-top: 10px; font-size: 12px; color: #6c757d;">
             Scan this QR code at the event entrance
           </p>
@@ -338,6 +374,8 @@ export async function POST(request: NextRequest) {
       to: email,
       subject: `🎫 Your Tickets for ${eventTitle} - CACK-pass`,
       html: emailHtml,
+      // ✅ Inline QR attachments — Gmail renders these reliably
+      attachments: qrCodes.map((qr) => qr.attachment),
     };
 
     const info = await transporter.sendMail(mailOptions);
@@ -345,6 +383,7 @@ export async function POST(request: NextRequest) {
     console.log('✅ Ticket confirmation email sent successfully:', {
       messageId: info.messageId,
       to: email,
+      attachments: qrCodes.length,
     });
 
     return NextResponse.json({
@@ -352,6 +391,7 @@ export async function POST(request: NextRequest) {
       message: 'Ticket confirmation email sent successfully',
       messageId: info.messageId,
       to: email,
+      attachmentsCount: qrCodes.length,
     });
 
   } catch (error: any) {

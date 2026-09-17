@@ -31,6 +31,15 @@ function getTransporter(): Transporter {
   return transporter;
 }
 
+// ✅ NEW: Attachment type for inline CID images (QR codes)
+export interface EmailAttachment {
+  filename: string;
+  content: Buffer | string;
+  cid: string;
+  contentType?: string;
+  encoding?: string;
+}
+
 export interface SendEmailOptions {
   to: string;
   subject: string;
@@ -38,15 +47,25 @@ export interface SendEmailOptions {
   from?: string;
   replyTo?: string;
   bcc?: string[];
+  // ✅ NEW: optional array of inline/regular attachments
+  attachments?: EmailAttachment[];
 }
 
 /**
  * Send email using Gmail SMTP
  */
-export async function sendEmail({ to, subject, html, from, replyTo, bcc }: SendEmailOptions) {
+export async function sendEmail({
+  to,
+  subject,
+  html,
+  from,
+  replyTo,
+  bcc,
+  attachments,
+}: SendEmailOptions) {
   try {
     const transporter = getTransporter();
-    
+
     const mailOptions = {
       from: from || process.env.EMAIL_FROM || `"CACK-pass" <${process.env.GMAIL_USER}>`,
       to,
@@ -54,21 +73,24 @@ export async function sendEmail({ to, subject, html, from, replyTo, bcc }: SendE
       html,
       ...(replyTo && { replyTo }),
       ...(bcc && bcc.length > 0 && { bcc: bcc.join(', ') }),
+      // ✅ Forward attachments (inline QR images with cid) to Nodemailer
+      ...(attachments && attachments.length > 0 && { attachments }),
     };
 
     const info = await transporter.sendMail(mailOptions);
-    
+
     console.log(`✅ Email sent successfully:`, {
       messageId: info.messageId,
       to,
       subject,
+      attachments: attachments?.length || 0,
       timestamp: new Date().toISOString(),
     });
-    
-    return { 
-      success: true, 
+
+    return {
+      success: true,
       messageId: info.messageId,
-      response: info.response 
+      response: info.response,
     };
   } catch (error) {
     console.error('❌ Email send failed:', error);
