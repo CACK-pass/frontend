@@ -1068,6 +1068,14 @@ const handlePayWithCard = useCallback(async (overrideEmail?: string) => {
 
               {isOrganizer && (
                 <>
+                                    {/* ✅ NEW: Attendees list button */}
+                  <Link
+                    href={`/dashboard/events/${eventId}/attendees`}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-all shadow-sm"
+                  >
+                    <Users className="h-4 w-4" />
+                    <span className="text-base font-medium">Attendees</span>
+                  </Link>
                   <Link
                     href={`/dashboard/edit-event/${eventId}`}
                     className="flex items-center gap-2 px-4 py-2 bg-secondary text-white rounded-xl hover:bg-primary-dark transition-all shadow-sm"
