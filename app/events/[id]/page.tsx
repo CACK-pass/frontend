@@ -430,16 +430,33 @@ function EventPageContent() {
   }, [event, userEmail])
 
     // ✅ Reset guest email error when the modal opens/closes
+    useEffect(() => {
+      if (showGuestEmailModal) {
+        // Fresh open — clear error, keep typed email if re-opened
+        setGuestEmailError('')
+      } else {
+        // Modal closed — fully reset
+        setGuestEmail('')
+        setGuestEmailError('')
+      }
+    }, [showGuestEmailModal])
+
+  // ✅ Keep the discount amount in sync with quantity/ticket changes.
+  // Prevents stale discount exploit: percent is the source of truth,
+  // amount is always recalculated off the CURRENT quantity/price.
   useEffect(() => {
-    if (showGuestEmailModal) {
-      // Fresh open — clear error, keep typed email if re-opened
-      setGuestEmailError('')
-    } else {
-      // Modal closed — fully reset
-      setGuestEmail('')
-      setGuestEmailError('')
+    if (!appliedDiscount || !selectedTicketType) return
+
+    const recalculated =
+      (selectedTicketType.price * selectedQuantity * appliedDiscount.percent) / 100
+
+    // Only update if it actually changed, to avoid unnecessary re-renders/loops
+    if (recalculated !== appliedDiscount.amount) {
+      setAppliedDiscount(prev =>
+        prev ? { ...prev, amount: recalculated } : prev
+      )
     }
-  }, [showGuestEmailModal])
+  }, [selectedQuantity, selectedTicketType, appliedDiscount?.percent])
 
   // Fetch discounts with validation
   const fetchDiscounts = useCallback(async () => {

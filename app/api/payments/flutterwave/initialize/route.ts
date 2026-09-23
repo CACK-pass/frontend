@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { connectDB } from '@/lib/database/connection';
 import { Payment, TicketType, Order, Event, User, DiscountCode } from '@/lib/database/models';
 import mongoose from 'mongoose';
+import crypto from 'crypto';
 
 export async function POST(request: NextRequest) {
   try {
@@ -38,6 +39,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid email format' }, { status: 400 });
     }
 
+    // ✅ FIX: Validate eventId is a real ObjectId before it ever touches the DB.
+    // Without this, a malformed eventId falls through to Event.findById(), throws,
+    // and gets reported as a generic 500 instead of a clean 400.
+    if (!mongoose.Types.ObjectId.isValid(eventId)) {
+      console.error('❌ Invalid eventId format:', eventId);
+      return NextResponse.json({ error: 'Invalid event ID format' }, { status: 400 });
+    }
+
     // Connect to database
     await connectDB();
     console.log('✅ Connected to database');
@@ -48,7 +57,10 @@ export async function POST(request: NextRequest) {
       user = await User.create({
         email,
         loginMethod: 'email',
-        privyId: `guest-${Date.now()}`,
+        // ✅ FIX: crypto.randomUUID() instead of Date.now() — two guest checkouts
+        // landing in the same millisecond could previously collide on a unique
+        // privyId index and throw a 500 instead of completing checkout.
+        privyId: `guest-${crypto.randomUUID()}`,
         isOrganizer: false,
         isProfileComplete: true,
       });
@@ -76,19 +88,38 @@ export async function POST(request: NextRequest) {
 
     if (!isVirtualTicket && mongoose.Types.ObjectId.isValid(ticketTypeId)) {
       realTicketTypeId = new mongoose.Types.ObjectId(ticketTypeId);
-      ticketType = await TicketType.findById(realTicketTypeId);
-      if (!ticketType) {
+
+      const existingTicketType = await TicketType.findById(realTicketTypeId);
+      if (!existingTicketType) {
         console.error('❌ Ticket type not found:', ticketTypeId);
         return NextResponse.json({ error: 'Ticket type not found' }, { status: 404 });
       }
-      const available = ticketType.maxSupply - ticketType.currentSupply;
-      if (available < quantity) {
-        return NextResponse.json({ error: `Only ${available} tickets available for ${ticketType.name}` }, { status: 400 });
+
+      // ✅ FIX: Atomically reserve the tickets instead of read-then-write.
+      // The old pattern (read currentSupply, check availability, then save)
+      // had a race window: two concurrent requests could both read "1 left"
+      // and both pass the check before either save() landed, overselling
+      // the last ticket(s). This single findOneAndUpdate only succeeds if
+      // there is still enough room at the exact moment of the update.
+      ticketType = await TicketType.findOneAndUpdate(
+        {
+          _id: realTicketTypeId,
+          $expr: { $lte: [{ $add: ['$currentSupply', quantity] }, '$maxSupply'] },
+        },
+        { $inc: { currentSupply: quantity } },
+        { new: true }
+      );
+
+      if (!ticketType) {
+        const available = existingTicketType.maxSupply - existingTicketType.currentSupply;
+        return NextResponse.json(
+          { error: `Only ${Math.max(0, available)} tickets available for ${existingTicketType.name}` },
+          { status: 400 }
+        );
       }
+
       ticketPrice = ticketType.price;
       ticketName = ticketType.name;
-      ticketType.currentSupply += quantity;
-      await ticketType.save();
     } else {
       isVirtual = true;
       ticketPrice = event.isFree ? 0 : event.price;
@@ -109,9 +140,10 @@ export async function POST(request: NextRequest) {
         $or: [{ expiresAt: null }, { expiresAt: { $gt: new Date() } }],
       });
       if (!discount) {
+        // ✅ FIX: release the reserved supply atomically instead of a
+        // non-atomic read-modify-write on the in-memory document.
         if (!isVirtual && ticketType) {
-          ticketType.currentSupply -= quantity;
-          await ticketType.save();
+          await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
         }
         return NextResponse.json({ error: 'Invalid or expired discount code' }, { status: 400 });
       }
@@ -119,13 +151,20 @@ export async function POST(request: NextRequest) {
       const remainingUses = discount.maxUses - discount.usedCount;
       if (remainingUses < quantity) {
         if (!isVirtual && ticketType) {
-          ticketType.currentSupply -= quantity;
-          await ticketType.save();
+          await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
         }
         return NextResponse.json({ error: `Discount code can only be used for ${remainingUses} more ticket(s)` }, { status: 400 });
       }
 
-      const discountPercentValue = discountPercent || discount.discountPercent;
+      // ✅ SECURITY FIX: never trust a client-supplied discountPercent.
+      // Previously this was `discountPercent || discount.discountPercent`,
+      // which let anyone calling this endpoint directly (bypassing the UI)
+      // pass an arbitrary discountPercent (e.g. 99) alongside any real,
+      // currently-valid discount code and have it accepted, because the
+      // mismatch check below only verified internal consistency of the
+      // attacker's own numbers — not the truth. The percent must always
+      // come from the validated DB record.
+      const discountPercentValue = discount.discountPercent;
       const discountAmountValue = (originalAmount * discountPercentValue) / 100;
       finalAmount = originalAmount - discountAmountValue;
 
@@ -139,16 +178,14 @@ export async function POST(request: NextRequest) {
 
       if (Math.abs(finalAmount - amount) > 0.01) {
         if (!isVirtual && ticketType) {
-          ticketType.currentSupply -= quantity;
-          await ticketType.save();
+          await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
         }
         return NextResponse.json({ error: `Discount amount mismatch. Expected: ${finalAmount.toFixed(2)}` }, { status: 400 });
       }
     } else {
       if (Math.abs(originalAmount - amount) > 0.01) {
         if (!isVirtual && ticketType) {
-          ticketType.currentSupply -= quantity;
-          await ticketType.save();
+          await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
         }
         return NextResponse.json({ error: `Amount mismatch. Expected: ${originalAmount.toFixed(2)}` }, { status: 400 });
       }
@@ -218,8 +255,7 @@ export async function POST(request: NextRequest) {
     } catch (fetchError: any) {
       console.error('❌ Flutterwave network error:', fetchError.message);
       if (!isVirtual && ticketType) {
-        ticketType.currentSupply -= quantity;
-        await ticketType.save();
+        await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
       }
       return NextResponse.json(
         { error: 'Payment service is currently unavailable. Please try again later.' },
@@ -232,8 +268,7 @@ export async function POST(request: NextRequest) {
 
     if (!flutterwaveData.status) {
       if (!isVirtual && ticketType) {
-        ticketType.currentSupply -= quantity;
-        await ticketType.save();
+        await TicketType.updateOne({ _id: ticketType._id }, { $inc: { currentSupply: -quantity } });
       }
       console.error('❌ Flutterwave API error:', flutterwaveData);
       return NextResponse.json(
