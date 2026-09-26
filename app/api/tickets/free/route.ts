@@ -15,7 +15,7 @@ const privy = new PrivyClient(
 // Rate limiting store
 const rateLimitStore = new Map<string, { count: number, resetTime: number }>()
 const RATE_LIMIT_WINDOW = 3600000 // 1 hour in milliseconds
-const MAX_FREE_TICKETS_PER_HOUR = 10 // ✅ Changed from 5 to 10
+const MAX_FREE_TICKETS_PER_HOUR = 10
 
 // Email transporter (same as paid tickets)
 let transporter: nodemailer.Transporter | null = null
@@ -70,7 +70,7 @@ async function sendFreeTicketEmail(params: {
     minute: '2-digit'
   }) : 'Time to be announced'
 
-  // ✅ Generate QR as buffer for inline attachment (orange)
+  // ✅ Generate QR as buffer for inline attachment (BLACK for max scannability)
   const qrData = JSON.stringify({
     ticketId: params.ticketId,
     eventTitle: params.eventTitle,
@@ -83,8 +83,9 @@ async function sendFreeTicketEmail(params: {
   const qrBuffer = await QRCode.toBuffer(qrData, {
     width: 200,
     margin: 2,
+    errorCorrectionLevel: 'H',
     color: {
-      dark: '#D95427', // ✅ CACK-pass orange
+      dark: '#000000', // ✅ BLACK — maximum contrast for reliable scanning
       light: '#ffffff'
     }
   })
@@ -538,7 +539,7 @@ export async function POST(request: NextRequest) {
         const newTicketType = await FreeTicketType.create({
           eventId: eventId,
           name: 'Free Admission',
-          category: 'General Admission', // ✅ Fixed: Space between words
+          category: 'General Admission',
           price: 0,
           maxSupply: 0,
           currentSupply: 0,
@@ -617,11 +618,13 @@ export async function POST(request: NextRequest) {
         venue: event.venue || 'Online Event'
       })
       
+      // ✅ BLACK QR for maximum scannability
       qrCodeDataUrl = await QRCode.toDataURL(qrData, {
         width: 200,
         margin: 2,
+        errorCorrectionLevel: 'H',
         color: {
-          dark: '#10b981',
+          dark: '#000000',
           light: '#ffffff'
         }
       })
@@ -666,7 +669,7 @@ export async function POST(request: NextRequest) {
       )
     }
     
-    // ✅ Send email using Gmail (same as paid tickets)
+    // ✅ Send email using Gmail
     let emailSent = false
     
     console.log(`\n📧 ========== SENDING FREE TICKET EMAIL ==========`)

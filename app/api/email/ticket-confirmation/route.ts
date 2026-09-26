@@ -170,7 +170,7 @@ export async function POST(request: NextRequest) {
             margin: 4,
             errorCorrectionLevel: 'H',
             color: {
-              dark: '#D95427', // ✅ CACK-pass orange
+              dark: '#000000', // ✅ CACK-pass orange #D95427
               light: '#ffffff',
             },
           });
